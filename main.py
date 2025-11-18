@@ -11,7 +11,7 @@ from fastapi.responses import StreamingResponse, JSONResponse
 # ---- Config ----
 SUNO_BASE_URL = os.getenv("SUNO_BASE_URL", "https://sunoapi.org/api")
 
-app = FastAPI(title="Suno Proxy API", version="1.0.0")
+app = FastAPI(title="Suno Proxy API", version="1.0.1")
 
 app.add_middleware(
     CORSMiddleware,
@@ -20,6 +20,13 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"]
 )
+
+
+def _resolve_api_key(header_key: Optional[str], query_key: Optional[str]) -> str:
+    api_key = (header_key or "").strip() or (query_key or "").strip()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="Missing API key (send in 'x-suno-api-key' header or 'api_key' query param)")
+    return api_key
 
 
 def _suno_headers(api_key: str) -> Dict[str, str]:
@@ -40,13 +47,13 @@ def read_root():
 @app.post("/generate")
 async def generate(
     request: Request,
-    x_suno_api_key: Optional[str] = Header(default=None, convert_underscores=True)
+    x_suno_api_key: Optional[str] = Header(default=None, convert_underscores=True),
+    api_key: Optional[str] = Query(default=None)
 ):
     """Forward prompt + model + callback URL to Suno API and return the job info.
     Expects JSON body: { prompt, model, callback_url }
     """
-    if not x_suno_api_key:
-        raise HTTPException(status_code=400, detail="Missing x-suno-api-key header")
+    resolved_key = _resolve_api_key(x_suno_api_key, api_key)
 
     try:
         body = await request.json()
@@ -74,7 +81,7 @@ async def generate(
     try:
         resp = requests.post(
             f"{SUNO_BASE_URL}/generate",
-            headers=_suno_headers(x_suno_api_key),
+            headers=_suno_headers(resolved_key),
             data=json.dumps(payload),
             timeout=60
         )
@@ -90,15 +97,15 @@ async def generate(
 @app.get("/status")
 async def status(
     id: str = Query(..., description="Generation or track id"),
-    x_suno_api_key: Optional[str] = Header(default=None, convert_underscores=True)
+    x_suno_api_key: Optional[str] = Header(default=None, convert_underscores=True),
+    api_key: Optional[str] = Query(default=None)
 ):
-    if not x_suno_api_key:
-        raise HTTPException(status_code=400, detail="Missing x-suno-api-key header")
+    resolved_key = _resolve_api_key(x_suno_api_key, api_key)
 
     try:
         resp = requests.get(
             f"{SUNO_BASE_URL}/status",
-            headers=_suno_headers(x_suno_api_key),
+            headers=_suno_headers(resolved_key),
             params={"id": id},
             timeout=30
         )
@@ -114,15 +121,15 @@ async def status(
 @app.get("/lyrics")
 async def lyrics(
     id: str = Query(..., description="Track id"),
-    x_suno_api_key: Optional[str] = Header(default=None, convert_underscores=True)
+    x_suno_api_key: Optional[str] = Header(default=None, convert_underscores=True),
+    api_key: Optional[str] = Query(default=None)
 ):
-    if not x_suno_api_key:
-        raise HTTPException(status_code=400, detail="Missing x-suno-api-key header")
+    resolved_key = _resolve_api_key(x_suno_api_key, api_key)
 
     try:
         resp = requests.get(
             f"{SUNO_BASE_URL}/lyrics",
-            headers=_suno_headers(x_suno_api_key),
+            headers=_suno_headers(resolved_key),
             params={"id": id},
             timeout=30
         )
@@ -138,15 +145,15 @@ async def lyrics(
 @app.get("/stream")
 async def stream(
     id: str = Query(..., description="Track id to stream"),
-    x_suno_api_key: Optional[str] = Header(default=None, convert_underscores=True)
+    x_suno_api_key: Optional[str] = Header(default=None, convert_underscores=True),
+    api_key: Optional[str] = Query(default=None)
 ):
-    if not x_suno_api_key:
-        raise HTTPException(status_code=400, detail="Missing x-suno-api-key header")
+    resolved_key = _resolve_api_key(x_suno_api_key, api_key)
 
     try:
         upstream = requests.get(
             f"{SUNO_BASE_URL}/stream",
-            headers=_suno_headers(x_suno_api_key),
+            headers=_suno_headers(resolved_key),
             params={"id": id},
             timeout=60,
             stream=True
@@ -168,15 +175,15 @@ async def stream(
 @app.get("/download")
 async def download(
     id: str = Query(..., description="Track id to download"),
-    x_suno_api_key: Optional[str] = Header(default=None, convert_underscores=True)
+    x_suno_api_key: Optional[str] = Header(default=None, convert_underscores=True),
+    api_key: Optional[str] = Query(default=None)
 ):
-    if not x_suno_api_key:
-        raise HTTPException(status_code=400, detail="Missing x-suno-api-key header")
+    resolved_key = _resolve_api_key(x_suno_api_key, api_key)
 
     try:
         upstream = requests.get(
             f"{SUNO_BASE_URL}/download",
-            headers=_suno_headers(x_suno_api_key),
+            headers=_suno_headers(resolved_key),
             params={"id": id},
             timeout=120
         )
@@ -199,7 +206,7 @@ _CALLBACK_STORE: Dict[str, Any] = {}
 @app.post("/callback")
 async def callback_handler(payload: Dict[str, Any]):
     # Store and acknowledge; in production, persist to DB/queue
-    track_id = str(payload.get("id") or payload.get("track_id") or "unknown")
+    track_id = str(payload.get("id") or payload.get("track_id") or payload.get("job_id") or "unknown")
     _CALLBACK_STORE[track_id] = payload
     return {"received": True, "id": track_id}
 
