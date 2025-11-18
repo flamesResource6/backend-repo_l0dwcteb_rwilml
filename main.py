@@ -10,8 +10,9 @@ from fastapi.responses import StreamingResponse, JSONResponse
 
 # ---- Config ----
 SUNO_BASE_URL = os.getenv("SUNO_BASE_URL", "https://sunoapi.org/api")
+CALLBACK_URL_ENV = os.getenv("CALLBACK_URL", "")
 
-app = FastAPI(title="Suno Proxy API", version="1.0.1")
+app = FastAPI(title="Suno Proxy API", version="1.0.2")
 
 app.add_middleware(
     CORSMiddleware,
@@ -50,8 +51,8 @@ async def generate(
     x_suno_api_key: Optional[str] = Header(default=None, convert_underscores=True),
     api_key: Optional[str] = Query(default=None)
 ):
-    """Forward prompt + model + callback URL to Suno API and return the job info.
-    Expects JSON body: { prompt, model, callback_url }
+    """Forward prompt + model to Suno API and always include a fixed callback URL.
+    Expects JSON body: { prompt, model }
     """
     resolved_key = _resolve_api_key(x_suno_api_key, api_key)
 
@@ -62,7 +63,6 @@ async def generate(
 
     prompt = (body or {}).get("prompt", "").strip()
     model = (body or {}).get("model", "").strip()
-    callback_url = (body or {}).get("callback_url", "").strip()
 
     if not prompt:
         raise HTTPException(status_code=400, detail="Prompt is required")
@@ -71,12 +71,14 @@ async def generate(
     if not model:
         raise HTTPException(status_code=400, detail="Model is required")
 
+    # Compute permanent callback URL: prefer env, else derive from request
+    callback_url = CALLBACK_URL_ENV.strip() or str(request.url_for("callback_handler"))
+
     payload = {
         "prompt": prompt,
-        "model": model
+        "model": model,
+        "callback_url": callback_url
     }
-    if callback_url:
-        payload["callback_url"] = callback_url
 
     try:
         resp = requests.post(
